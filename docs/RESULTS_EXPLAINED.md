@@ -73,8 +73,15 @@ the whole call (both speakers, silence included). Min–Max is the per-conversat
 | `non_content_ratio` | 0.013 | 0.009 | 0 – 0.15 | analog | fraction of call that is noise |
 | `question_rate_per_min` | 1.306 | 1.103 | 0 – 7.20 | **approx**† | questions / min (SWDA subset) |
 
-† `question_rate_per_min` is computed only on the **1,155 / 2,438** conversations the
-Switchboard Dialog Act corpus (SWDA) covers; the rest are blank and excluded from its mean.
+† `question_rate_per_min` is the **only** column not over the full corpus: it is computed
+on the **1,155 / 2,438** conversations the Switchboard Dialog Act corpus (SWDA) covers (the
+other 1,283 carry no dialog-act tags and are excluded from its mean). The covered subset
+tracks the full corpus within a few percent on every metric measurable on both halves,
+skewing only marginally more interactive (+2–4% turns / interruptions / events), so this
+value is if anything a slight over-estimate of the full-corpus question rate. All other
+columns are over 2,438 conversations (`bc_rate_per_min` 2,436 — 2 sessions are absent from
+the backchannel list). Note the aggregate CSV's `n_conversations = 2438` does not apply to
+`question_rate_per_min`.
 
 Sanity signals that build confidence: **FTO ≈ 0.07 s** (human transitions cluster near
 zero), **speaker_balance ≈ 0.50** (balanced dyads), durations 5–10 min, ≈198 combined WPM,

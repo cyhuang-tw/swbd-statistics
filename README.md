@@ -14,7 +14,7 @@ event here is a **derived analog** built from data SWBD *does* have — MS-State
 alignments, a backchannel list, and dialog-act tags. The `Status` column below says how
 comparable each number is. Full definitions and caveats: [`docs/RESULTS_EXPLAINED.md`](docs/RESULTS_EXPLAINED.md).
 
-## Results (mean over 2,438 conversations)
+## Results (means over all 2,438 conversations — except `question_rate_per_min`, over 1,155; see Coverage)
 
 | Metric | Mean | Status | How it's derived on SWBD |
 | --- | ---: | --- | --- |
@@ -50,6 +50,16 @@ recover (footnote it) · **composite** = a sum defined here · **n/a** = no SWBD
 Medians, ranges, and the full per-metric explanation are in
 [`docs/RESULTS_EXPLAINED.md`](docs/RESULTS_EXPLAINED.md); the drop-in row is
 [`results/swbd_per_type_aggregate.csv`](results/swbd_per_type_aggregate.csv).
+
+> **Coverage.** Every column is a mean over all **2,438** conversations **except
+> `question_rate_per_min`**, which is over the **1,155** conversations annotated by the
+> Switchboard Dialog Act corpus (SWDA) — the other 1,283 carry no dialog-act tags and
+> cannot be scored for questions. The aggregate CSV's single `n_conversations = 2438`
+> therefore does **not** apply to that one column. The SWDA subset tracks the full corpus
+> within a few percent on every metric measurable on both halves, skewing only marginally
+> more interactive (+2–4% turns / interruptions / events), so `1.306` is if anything a
+> slight **over-estimate** of the full-corpus question rate. (`backchannels.csv` covers
+> 2,436/2,438; the 2 absent sessions contribute 0 to `bc_rate`.)
 
 Sanity signals: FTO ≈ 0.07 s (human transitions cluster near zero), speaker balance ≈ 0.50
 (balanced dyads), durations 5–10 min, ≈198 combined WPM.
