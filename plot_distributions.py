@@ -7,13 +7,16 @@ value_s) and renders one histogram per requested distribution:
 
   * pause  — within-turn same-speaker silence (s), positive
   * gap    — between-speaker silence at a floor transfer (positive FTO)
-  * fto    — the full signed floor-transfer offset (gap U overlap); the 0 line is
-             drawn and the overlap region (value < 0) shaded
+  * fto    — the full signed floor-transfer offset (gap U overlap U exact-0
+             flush); the 0 line is drawn and the overlap region (value < 0)
+             shaded
 
     python plot_distributions.py \
         --silences results/swbd_silences.csv --out-dir results/plots
 
-Use `--log-count` for the heavy tails, `--xlim` to clip the axis.
+Use `--log-count` for the heavy tails. `--{pause,gap,fto}-xlim` set the axis
+range; values outside it are folded into the edge (overflow) bins, and the
+caption reports how many. Caption stats are over the full, unclipped data.
 """
 from __future__ import annotations
 
@@ -39,7 +42,8 @@ def load_silences(path):
             by_type[row["type"]].append(float(row["value_s"]))
     out = {k: np.asarray(v, dtype=float) for k, v in by_type.items()}
     out["fto"] = np.concatenate(
-        [out.get("gap", np.array([])), out.get("overlap", np.array([]))]
+        [out.get("gap", np.array([])), out.get("overlap", np.array([])),
+         out.get("flush", np.array([]))]  # exact-0 transfers complete the FTOs
     )
     return out
 
@@ -56,7 +60,12 @@ def plot_hist(a, title, out_path, bin_width, xlim, log_count, signed=False):
     lo, hi = (xlim if xlim else (float(a.min()), float(a.max())))
     lo = float(np.floor(lo / bin_width) * bin_width)
     hi = float(np.ceil(hi / bin_width) * bin_width)
-    edges = np.arange(lo, hi + bin_width / 2.0, bin_width)
+    # linspace, not arange: arange's float drift can leave edges[-1] < hi, and
+    # np.clip lands the whole right tail exactly on hi -- outside the last bin,
+    # silently dropping it. linspace guarantees edges[-1] == hi.
+    edges = np.linspace(lo, hi, int(round((hi - lo) / bin_width)) + 1)
+    n_lo = int((a < lo).sum())
+    n_hi = int((a > hi).sum())
     fig, ax = plt.subplots(figsize=(7.5, 4.2))
     ax.hist(np.clip(a, lo, hi), bins=edges, color="#3b6ea5", edgecolor="none")
     if signed:
@@ -73,7 +82,11 @@ def plot_hist(a, title, out_path, bin_width, xlim, log_count, signed=False):
     ax.set_ylabel("count" + (" (log)" if log_count else ""))
     ax.set_title(title)
     ax.margins(x=0)
-    fig.text(0.5, -0.02, _stats_caption(a), ha="center", fontsize=8, color="#555")
+    cap = _stats_caption(a)
+    if n_lo or n_hi:
+        cap += (f"   [edge bins fold in the out-of-range tail: "
+                f"{n_lo:,} < {lo:g}s, {n_hi:,} > {hi:g}s]")
+    fig.text(0.5, -0.02, cap, ha="center", fontsize=8, color="#555")
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, bbox_inches="tight")
     plt.close(fig)

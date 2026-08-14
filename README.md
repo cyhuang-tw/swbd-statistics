@@ -68,13 +68,18 @@ Sanity signals: FTO ≈ 0.07 s (human transitions cluster near zero), speaker ba
 
 ```
 per_conversation_swbd.py        the analysis script (stdlib + numpy)
+plot_distributions.py           histogram plots from the raw silence dump (matplotlib)
 backchannels.csv                VAP/Ekstedt SWBD backchannel list (input; see Data)
 results/
   swbd_per_type_aggregate.csv   the single Switchboard comparison row
   swbd_per_conversation.csv     one row per conversation (2,438 rows)
   swbd_per_type_aggregate.json  mean/median/std/min/max/n per metric
+  swbd_silences.csv             raw pause/gap/overlap/flush event dump (451,763 rows)
+  swbd_distributions.json       binned + quantile summaries of the distributions
+  plots/                        {pause,gap,fto}_hist.png
 docs/
   RESULTS_EXPLAINED.md          results table + per-metric reference + status legend
+  silence-distributions-design.md  design + definitions for the distribution outputs
 scripts/
   fetch_backchannels.sh         (re)download backchannels.csv from its source
 ```
@@ -82,7 +87,8 @@ scripts/
 ## Setup
 
 ```bash
-pip install -r requirements.txt        # numpy only; Python >= 3.8, no GPU
+pip install -r requirements.txt        # numpy (+ matplotlib, only for plot_distributions.py)
+                                       # Python >= 3.8, no GPU
 ```
 
 ## Data prerequisites
@@ -105,8 +111,30 @@ python per_conversation_swbd.py \
 ```
 
 Knobs (defaults shown): `--ipu-gap 0.2` (merge a speaker's own words into an IPU across
-≤ this gap, seconds) and `--trp-tol 1.0` (interruption onset window, seconds). Omit
+≤ this gap, seconds), `--trp-tol 1.0` (interruption onset window, seconds),
+`--pause-min 0.05` (min within-turn silence counted as a pause, seconds) and
+`--bin-width 0.05` (histogram bin width for `swbd_distributions.json`, seconds). Omit
 `--swda-root` data and `question_rate_per_min` is simply left blank.
+
+## Silence & FTO distributions
+
+Beyond the aggregate row, the pipeline emits the three duration **distributions** over all
+2,438 conversations — **pause** (within-turn, same speaker resumes; ≥ `--pause-min`),
+**gap** (between-speaker silence at a floor transfer, FTO > 0) and the full signed
+**floor-transfer offset** (FTO; negative = overlap transition):
+
+| type | n | mean (s) | median (s) | p10 | p90 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pause | 331,600 | 0.518 | 0.409 | 0.130 | 1.008 |
+| gap | 68,613 | 0.652 | 0.358 | 0.073 | 1.529 |
+| overlap | 51,536 | −0.845 | −0.439 | −2.141 | −0.067 |
+| FTO | 120,163 | 0.010 | 0.090 | −1.075 | 0.994 |
+
+42.9% of floor transfers are overlaps. Raw events: `results/swbd_silences.csv`
+(`type ∈ {pause, gap, overlap, flush}`; flush = exact-0 FTO; FTO = gap ∪ overlap ∪ flush).
+Summaries: `results/swbd_distributions.json`. Plots: `python plot_distributions.py`.
+Definitions, invariants and tail caveats:
+[`docs/silence-distributions-design.md`](docs/silence-distributions-design.md).
 
 The committed `results/` were produced on the Delta cluster with
 `--trans-root …/LDC97S62/transcriptions/swb_ms98_transcriptions`,

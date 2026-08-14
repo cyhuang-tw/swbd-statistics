@@ -49,9 +49,9 @@ NONCONTENT_TOKENS = {"[noise]", "[vocalized-noise]"}
 # ----- thresholds (exposed as CLI args, defaults documented in --help) -----
 DEF_IPU_GAP = 0.2     # s; merge a speaker's own words into an IPU across <= this gap
 DEF_TRP_TOL = 1.0     # s; "interruption" onset must precede the incumbent turn end
+#                       by more than this (a barge-in well before the floor was free)
 DEF_PAUSE_MIN = 0.05  # s; min same-speaker within-turn silence counted as a pause
 DEF_BIN_WIDTH = 0.05  # s; histogram bin width for the distribution summaries
-#                       by more than this (a barge-in well before the floor was free)
 
 
 # --------------------------------------------------------------------------- #
@@ -239,9 +239,17 @@ def summarize(values, bin_width):
         return None
     lo = float(np.floor(a.min() / bin_width) * bin_width)
     hi = float(np.ceil(a.max() / bin_width) * bin_width)
+    # float guards: the snapped bounds must contain the data (k*bin_width can
+    # land a hair inside min/max), and linspace -- not arange -- builds the
+    # edges so drift cannot pull edges[-1] below hi. Either failure silently
+    # drops the extreme value from the histogram.
+    if lo > a.min():
+        lo -= bin_width
+    if hi < a.max():
+        hi += bin_width
     if hi <= lo:
         hi = lo + bin_width
-    edges = np.arange(lo, hi + bin_width / 2.0, bin_width)
+    edges = np.linspace(lo, hi, int(round((hi - lo) / bin_width)) + 1)
     counts, edges = np.histogram(a, bins=edges)
     qs = [1, 5, 10, 25, 50, 75, 90, 95, 99]
     return {
@@ -310,9 +318,11 @@ def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol,
     turn_durs = [e - s for s, e, _ in turns]
     ftos = [turns[i][0] - turns[i - 1][1] for i in range(1, len(turns))]  # +gap/-overlap
     n_speaker_changes = len(ftos)
-    # signed FTO split (gap = positive, overlap = negative) + within-turn pauses
-    gaps = [f for f in ftos if f > 0]
-    overlaps = [f for f in ftos if f < 0]
+    # signed FTO split (gap = positive, overlap = negative) + within-turn pauses.
+    # classify on the 4 dp-rounded value so the raw dump (which stores 4 dp)
+    # can never carry a "gap" row of 0.0: |FTO| < 0.00005 counts as flush.
+    gaps = [f for f in ftos if round(f, 4) > 0]
+    overlaps = [f for f in ftos if round(f, 4) < 0]
     pauses = extract_pauses(turns, A["floor_words"], B["floor_words"], pause_min)
 
     # ---- overlap (both holding the floor; backchannels already excluded) ---
@@ -380,11 +390,11 @@ def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol,
         "fto_median_s": round(float(np.median(ftos)), 3) if ftos else 0.0,
         "fto_n": len(ftos),
         "gap_n": len(gaps),
-        "gap_median_s": round(float(np.median(gaps)), 3) if gaps else 0.0,
+        "gap_median_s": round(float(np.median(gaps)), 3) if gaps else nan,
         "overlap_n": len(overlaps),
-        "overlap_median_s": round(float(np.median(overlaps)), 3) if overlaps else 0.0,
+        "overlap_median_s": round(float(np.median(overlaps)), 3) if overlaps else nan,
         "pause_n": len(pauses),
-        "pause_median_s": round(float(np.median(pauses)), 3) if pauses else 0.0,
+        "pause_median_s": round(float(np.median(pauses)), 3) if pauses else nan,
         # raw per-conversation event lists (ignored by the scalar CSV writer;
         # consumed by the corpus distribution aggregation)
         "_pauses": pauses,
@@ -458,6 +468,10 @@ def main():
     ap.add_argument("--label", default="Switchboard",
                     help="type label for the aggregate row")
     args = ap.parse_args()
+    if args.pause_min <= 0:
+        ap.error("--pause-min must be > 0")
+    if args.bin_width <= 0:
+        ap.error("--bin-width must be > 0")
 
     os.makedirs(args.out_dir, exist_ok=True)
     sessions = find_sessions(args.trans_root)
@@ -495,8 +509,11 @@ def main():
                         for k in fields})
 
     # ---- silence & FTO distributions: raw dump + binned summary ------------
-    # pool every event across the corpus. fto = gap (>0) U overlap (<0); an
-    # exact-0 FTO (flush transfer, ~never) is kept in fto only.
+    # pool every event across the corpus. fto = gap (>0) U overlap (<0) U flush
+    # (exact-0 transfer, rare); every floor transfer emits exactly one dump row,
+    # so the fto distribution is reconstructible from the raw dump alone. the
+    # sign test uses the same 4 dp-rounded value the dump stores, so a row's
+    # sign always matches its type.
     raw = []
     pool = {"pause": [], "gap": [], "overlap": [], "fto": []}
     for r in rows:
@@ -506,12 +523,14 @@ def main():
         for fto in r["_ftos"]:
             v = round(float(fto), 4)
             pool["fto"].append(v)
-            if fto > 0:
+            if v > 0:
                 raw.append((r["task_id"], "gap", v))
                 pool["gap"].append(v)
-            elif fto < 0:
+            elif v < 0:
                 raw.append((r["task_id"], "overlap", v))
                 pool["overlap"].append(v)
+            else:
+                raw.append((r["task_id"], "flush", 0.0))
     sil_csv = os.path.join(args.out_dir, "swbd_silences.csv")
     with open(sil_csv, "w", newline="") as f:
         w = csv.writer(f)
@@ -522,16 +541,18 @@ def main():
         "n_conversations": len(rows),
         "pause_min_s": args.pause_min,
         "bin_width_s": args.bin_width,
-        "note": ("gap = FTO > 0, overlap = FTO < 0; fto = every floor transfer "
-                 "(gap, overlap, and rare exact-0 flush transfers), so "
-                 "fto_n = gap_n + overlap_n + n(exact-0). pause = within-turn "
-                 "same-speaker silence >= pause_min_s."),
+        "note": ("gap = FTO > 0, overlap = FTO < 0, flush = exact-0 FTO "
+                 "(sign classified on the 4 dp-rounded value); fto = every "
+                 "floor transfer = gap U overlap U flush, reconstructible "
+                 "from the raw dump. pause = within-turn same-speaker "
+                 "silence >= pause_min_s."),
         "distributions": {k: summarize(v, args.bin_width) for k, v in pool.items()},
     }
     with open(os.path.join(args.out_dir, "swbd_distributions.json"), "w") as f:
         json.dump(dist, f, indent=2)
+    n_flush = len(pool["fto"]) - len(pool["gap"]) - len(pool["overlap"])
     print(f"Silences: pause={len(pool['pause'])} gap={len(pool['gap'])} "
-          f"overlap={len(pool['overlap'])} fto={len(pool['fto'])} "
+          f"overlap={len(pool['overlap'])} flush={n_flush} fto={len(pool['fto'])} "
           f"-> {sil_csv}, swbd_distributions.json", file=sys.stderr)
 
     # ---- aggregate (single row, FLOOR per_type_aggregate flat schema) ------
@@ -566,6 +587,7 @@ def main():
         json.dump({"label": args.label, "n_conversations": len(rows),
                    "n_conversations_with_questions": n_q,
                    "ipu_gap": args.ipu_gap, "trp_tol": args.trp_tol,
+                   "pause_min": args.pause_min,
                    "metrics": detail}, f, indent=2)
 
     print(f"\nWrote:\n  {pc}\n  {ag_csv}\n  "
