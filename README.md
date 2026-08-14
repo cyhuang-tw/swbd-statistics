@@ -12,7 +12,7 @@ breakdown) and all multi-annotator IAA columns are omitted.
 FLOOR's metrics come from human-labeled turn-taking events; Switchboard has none, so every
 event here is a **derived analog** built from data SWBD *does* have — MS-State word
 alignments, a backchannel list, and dialog-act tags. The `Status` column below says how
-comparable each number is. Full definitions and caveats: [`docs/RESULTS_EXPLAINED.md`](docs/RESULTS_EXPLAINED.md).
+comparable each number is. Full definitions and notes: [`docs/RESULTS_EXPLAINED.md`](docs/RESULTS_EXPLAINED.md).
 
 ## Results (means over all 2,438 conversations — except `question_rate_per_min`, over 1,155; see Coverage)
 
@@ -133,7 +133,7 @@ Beyond the aggregate row, the pipeline emits the three duration **distributions*
 42.9% of floor transfers are overlaps. Raw events: `results/swbd_silences.csv`
 (`type ∈ {pause, gap, overlap, flush}`; flush = exact-0 FTO; FTO = gap ∪ overlap ∪ flush).
 Summaries: `results/swbd_distributions.json`. Plots: `python plot_distributions.py`.
-Definitions, invariants and tail caveats:
+Definitions, invariants and notes on the tails:
 [`docs/silence-distributions-design.md`](docs/silence-distributions-design.md).
 
 The committed `results/` were produced on the Delta cluster with

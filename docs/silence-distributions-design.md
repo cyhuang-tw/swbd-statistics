@@ -179,7 +179,7 @@ review passes:
   rounded-vs-raw sign classification mismatch (now classified on the stored
   4 dp value).
 
-### Tail caveats (read before quoting extreme quantiles)
+### Notes on the tails (read before quoting extreme quantiles)
 
 The distribution *bodies* are conversational; the extreme tails are
 telephone-task artifacts, verified against the raw transcripts:
