@@ -126,9 +126,12 @@ In `per_conversation_swbd.py`, behavior-preserving:
 - **Regression:** every numeric column of the existing
   `results/swbd_per_conversation.csv` is byte-identical after the change (the
   turn model and all current stats are untouched).
-- **Invariants (per conversation):** `len(gaps) + len(overlaps) == n_speaker_changes`;
-  `mean(ftos) ≈ fto_mean_s`; `median(ftos) ≈ fto_median_s` (regression tie-out to
-  the existing aggregate FTO).
+- **Invariants (per conversation):** `len(ftos) == n_speaker_changes` exactly
+  (every floor transfer emits one FTO); `len(gaps) + len(overlaps) ==
+  n_speaker_changes − n(exact-0 FTO)` (a flush transfer, `start(next) ==
+  end(prev)`, is neither gap nor overlap — corpus-wide this is 14 of 120,163
+  transfers); `mean(ftos) ≈ fto_mean_s`; `median(ftos) ≈ fto_median_s`
+  (regression tie-out to the existing aggregate FTO).
 - **Partition:** no pause interval spans a floor transfer (same-speaker,
   within-turn only); the worked example above reproduces `{pause 0.6, gap 0.8,
   overlap −0.5}`.
