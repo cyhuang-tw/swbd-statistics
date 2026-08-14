@@ -50,6 +50,8 @@ NONCONTENT_TOKENS = {"[noise]", "[vocalized-noise]"}
 DEF_IPU_GAP = 0.2     # s; merge a speaker's own words into an IPU across <= this gap
 DEF_TRP_TOL = 1.0     # s; "interruption" onset must precede the incumbent turn end
 #                       by more than this (a barge-in well before the floor was free)
+DEF_PAUSE_MIN = 0.05  # s; min same-speaker within-turn silence counted as a pause
+DEF_BIN_WIDTH = 0.05  # s; histogram bin width for the distribution summaries
 
 
 # --------------------------------------------------------------------------- #
@@ -210,7 +212,64 @@ def build_turns(ipus):
     return turns
 
 
-def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol):
+def extract_pauses(turns, fw_a, fw_b, pause_min):
+    """Within-turn, same-speaker silences >= pause_min, at word resolution.
+
+    `fw_{a,b}`: each speaker's raw *floor* words [(start, end), ...] (lexical,
+    backchannels already excluded). A pause is the silence between a turn
+    holder's consecutive floor words; because it is taken inside a single
+    floor-holding turn it never spans a floor transfer. Measured on raw word
+    endpoints, so it is independent of the IPU-merge gap (finer than 0.2 s)."""
+    fw = {"A": sorted(fw_a), "B": sorted(fw_b)}
+    pauses = []
+    for ts, te, sp in turns:
+        ws = sorted((s, e) for s, e in fw[sp] if ts <= (s + e) / 2.0 <= te)
+        for k in range(1, len(ws)):
+            sil = ws[k][0] - ws[k - 1][1]
+            if sil >= pause_min:
+                pauses.append(round(sil, 4))
+    return pauses
+
+
+def summarize(values, bin_width):
+    """Summary stats + a fixed-width histogram for a list of seconds. Returns
+    None for an empty list."""
+    a = np.asarray(values, dtype=float)
+    if a.size == 0:
+        return None
+    lo = float(np.floor(a.min() / bin_width) * bin_width)
+    hi = float(np.ceil(a.max() / bin_width) * bin_width)
+    # float guards: the snapped bounds must contain the data (k*bin_width can
+    # land a hair inside min/max), and linspace -- not arange -- builds the
+    # edges so drift cannot pull edges[-1] below hi. Either failure silently
+    # drops the extreme value from the histogram.
+    if lo > a.min():
+        lo -= bin_width
+    if hi < a.max():
+        hi += bin_width
+    if hi <= lo:
+        hi = lo + bin_width
+    edges = np.linspace(lo, hi, int(round((hi - lo) / bin_width)) + 1)
+    counts, edges = np.histogram(a, bins=edges)
+    qs = [1, 5, 10, 25, 50, 75, 90, 95, 99]
+    return {
+        "n": int(a.size),
+        "mean": round(float(a.mean()), 4),
+        "median": round(float(np.median(a)), 4),
+        "std": round(float(a.std()), 4),
+        "min": round(float(a.min()), 4),
+        "max": round(float(a.max()), 4),
+        "quantiles": {f"p{q}": round(float(np.percentile(a, q)), 4) for q in qs},
+        "histogram": {
+            "bin_width": bin_width,
+            "bin_edges": [round(float(x), 4) for x in edges],
+            "counts": [int(c) for c in counts],
+        },
+    }
+
+
+def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol,
+            pause_min=DEF_PAUSE_MIN):
     dur_s = max([e for _, e, _, _ in words_a] + [e for _, e, _, _ in words_b] + [0.0])
     if dur_s <= 0:
         return None
@@ -232,7 +291,8 @@ def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol):
                        if k == "word" and w and not in_any((s + e) / 2.0, bc_iv)]
         floor_ipus = merge_intervals(floor_words, gap=ipu_gap)
         return dict(voiced=voiced, activity=activity, noncontent=noncontent,
-                    laughter=laughter, lex=lex, floor_ipus=floor_ipus)
+                    laughter=laughter, lex=lex, floor_ipus=floor_ipus,
+                    floor_words=floor_words)
 
     A, B = sided(words_a, bc_a), sided(words_b, bc_b)
 
@@ -258,6 +318,12 @@ def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol):
     turn_durs = [e - s for s, e, _ in turns]
     ftos = [turns[i][0] - turns[i - 1][1] for i in range(1, len(turns))]  # +gap/-overlap
     n_speaker_changes = len(ftos)
+    # signed FTO split (gap = positive, overlap = negative) + within-turn pauses.
+    # classify on the 4 dp-rounded value so the raw dump (which stores 4 dp)
+    # can never carry a "gap" row of 0.0: |FTO| < 0.00005 counts as flush.
+    gaps = [f for f in ftos if round(f, 4) > 0]
+    overlaps = [f for f in ftos if round(f, 4) < 0]
+    pauses = extract_pauses(turns, A["floor_words"], B["floor_words"], pause_min)
 
     # ---- overlap (both holding the floor; backchannels already excluded) ---
     ov = intersect(A["floor_ipus"], B["floor_ipus"])
@@ -323,6 +389,16 @@ def analyze(sess, words_a, words_b, bc, q_count, ipu_gap, trp_tol):
         "fto_mean_s": round(float(np.mean(ftos)), 3) if ftos else 0.0,
         "fto_median_s": round(float(np.median(ftos)), 3) if ftos else 0.0,
         "fto_n": len(ftos),
+        "gap_n": len(gaps),
+        "gap_median_s": round(float(np.median(gaps)), 3) if gaps else nan,
+        "overlap_n": len(overlaps),
+        "overlap_median_s": round(float(np.median(overlaps)), 3) if overlaps else nan,
+        "pause_n": len(pauses),
+        "pause_median_s": round(float(np.median(pauses)), 3) if pauses else nan,
+        # raw per-conversation event lists (ignored by the scalar CSV writer;
+        # consumed by the corpus distribution aggregation)
+        "_pauses": pauses,
+        "_ftos": ftos,
         "speaker_balance": round(float(balance), 4),
         "bc_rate_per_min": round(rate(bc_count), 3),
         "bc_ack_per_min": nan,    # SWBD: backchannel subtypes unavailable
@@ -355,6 +431,10 @@ METRIC_KEYS = [
     "int_cooperative_per_min", "int_floor_taking_per_min", "int_non_floor_per_min",
     "overlap_count_per_min", "overlap_dur_s", "laughter_rate_per_min",
     "non_content_ratio", "question_rate_per_min",
+    # silence & FTO distribution summaries (this extension; appended so the
+    # existing columns keep their exact positions)
+    "gap_n", "gap_median_s", "overlap_n", "overlap_median_s",
+    "pause_n", "pause_median_s",
 ]
 
 
@@ -381,9 +461,17 @@ def main():
     ap.add_argument("--out-dir", default="results")
     ap.add_argument("--ipu-gap", type=float, default=DEF_IPU_GAP)
     ap.add_argument("--trp-tol", type=float, default=DEF_TRP_TOL)
+    ap.add_argument("--pause-min", type=float, default=DEF_PAUSE_MIN,
+                    help="min same-speaker within-turn silence (s) counted as a pause")
+    ap.add_argument("--bin-width", type=float, default=DEF_BIN_WIDTH,
+                    help="histogram bin width (s) for swbd_distributions.json")
     ap.add_argument("--label", default="Switchboard",
                     help="type label for the aggregate row")
     args = ap.parse_args()
+    if args.pause_min <= 0:
+        ap.error("--pause-min must be > 0")
+    if args.bin_width <= 0:
+        ap.error("--bin-width must be > 0")
 
     os.makedirs(args.out_dir, exist_ok=True)
     sessions = find_sessions(args.trans_root)
@@ -401,7 +489,8 @@ def main():
             words_a = parse_word_file(wa)
             words_b = parse_word_file(wb)
             r = analyze(sess, words_a, words_b, bc.get(sess, {}),
-                        swda_q.get(sess), args.ipu_gap, args.trp_tol)
+                        swda_q.get(sess), args.ipu_gap, args.trp_tol,
+                        args.pause_min)
             if r:
                 rows.append(r)
         except Exception as e:  # noqa: BLE001
@@ -418,6 +507,53 @@ def main():
         for r in rows:
             w.writerow({k: ("" if (isinstance(r[k], float) and np.isnan(r[k])) else r[k])
                         for k in fields})
+
+    # ---- silence & FTO distributions: raw dump + binned summary ------------
+    # pool every event across the corpus. fto = gap (>0) U overlap (<0) U flush
+    # (exact-0 transfer, rare); every floor transfer emits exactly one dump row,
+    # so the fto distribution is reconstructible from the raw dump alone. the
+    # sign test uses the same 4 dp-rounded value the dump stores, so a row's
+    # sign always matches its type.
+    raw = []
+    pool = {"pause": [], "gap": [], "overlap": [], "fto": []}
+    for r in rows:
+        for p in r["_pauses"]:
+            raw.append((r["task_id"], "pause", p))
+            pool["pause"].append(p)
+        for fto in r["_ftos"]:
+            v = round(float(fto), 4)
+            pool["fto"].append(v)
+            if v > 0:
+                raw.append((r["task_id"], "gap", v))
+                pool["gap"].append(v)
+            elif v < 0:
+                raw.append((r["task_id"], "overlap", v))
+                pool["overlap"].append(v)
+            else:
+                raw.append((r["task_id"], "flush", 0.0))
+    sil_csv = os.path.join(args.out_dir, "swbd_silences.csv")
+    with open(sil_csv, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["conversation_id", "type", "value_s"])
+        w.writerows(raw)
+    dist = {
+        "label": args.label,
+        "n_conversations": len(rows),
+        "pause_min_s": args.pause_min,
+        "bin_width_s": args.bin_width,
+        "note": ("gap = FTO > 0, overlap = FTO < 0, flush = exact-0 FTO "
+                 "(sign classified on the 4 dp-rounded value); fto = every "
+                 "floor transfer = gap U overlap U flush, reconstructible "
+                 "from the raw dump. pause = within-turn same-speaker "
+                 "silence >= pause_min_s."),
+        "distributions": {k: summarize(v, args.bin_width) for k, v in pool.items()},
+    }
+    with open(os.path.join(args.out_dir, "swbd_distributions.json"), "w") as f:
+        json.dump(dist, f, indent=2)
+    n_flush = len(pool["fto"]) - len(pool["gap"]) - len(pool["overlap"])
+    print(f"Silences: pause={len(pool['pause'])} gap={len(pool['gap'])} "
+          f"overlap={len(pool['overlap'])} flush={n_flush} fto={len(pool['fto'])} "
+          f"-> {sil_csv}, swbd_distributions.json", file=sys.stderr)
 
     # ---- aggregate (single row, FLOOR per_type_aggregate flat schema) ------
     n_q = sum(1 for r in rows if not np.isnan(r["question_rate_per_min"]))
@@ -451,6 +587,7 @@ def main():
         json.dump({"label": args.label, "n_conversations": len(rows),
                    "n_conversations_with_questions": n_q,
                    "ipu_gap": args.ipu_gap, "trp_tol": args.trp_tol,
+                   "pause_min": args.pause_min,
                    "metrics": detail}, f, indent=2)
 
     print(f"\nWrote:\n  {pc}\n  {ag_csv}\n  "
